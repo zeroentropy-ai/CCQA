@@ -10,7 +10,6 @@ extern crate kuchiki;
 use kuchiki::traits::*;
 use kuchiki::NodeRef;
 
-use indicatif::ParallelProgressIterator;
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::borrow::Cow;
@@ -19,8 +18,6 @@ use std::io::prelude::*;
 use std::time::Instant;
 
 use clap::{App, Arg};
-use rayon::iter::ParallelIterator;
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use warc::header::WarcHeader;
 use warc::{RawRecord, WarcReader};
@@ -325,43 +322,28 @@ fn minify(file_path: &str) -> Vec<HTMLMinified> {
 
     let from_start = Instant::now();
     let file = WarcReader::from_path(file_path).unwrap();
-    let file_output = file.collect::<Vec<Result<RawRecord, warc::Error>>>();
-    // Read WARC file and collect all well formatted webpages
-    let file_error_filter_out = file_output
-        .iter()
-        .filter(|x| x.is_ok())
-        .map(|x| x.as_ref().unwrap())
-        .collect::<Vec<&RawRecord>>();
-    println!(
-        "Finished Reading in {} ms",
-        from_start.elapsed().as_millis()
-    );
 
-    // Parallel process WARC file
-    let from_process = Instant::now();
-    let file_output_length = file_output.len() as u64;
-    println!("{}", file_output_length);
-    let (oks, _): (Vec<_>, Vec<_>) = file_error_filter_out
-        .into_par_iter()
-        .progress_count(file_output_length)
-        .map(single_record_processor)
-        .partition(Option::is_some);
-    println!(
-        "Finished Processing in {} ms for a throughput of {} per ms",
-        from_process.elapsed().as_millis(),
-        (file_output_length as u128) / from_process.elapsed().as_millis()
-    );
+    let mut oks = Vec::new();
+    let mut record_count: u64 = 0;
+
+    for record_result in file {
+        record_count += 1;
+        if let Ok(record) = record_result {
+            if let Some(minified) = single_record_processor(&record) {
+                if !minified.mhtml.is_empty() {
+                    oks.push(minified);
+                }
+            }
+        }
+    }
+
     println!(
         "Finished End to End in {} ms, for a throughput of {} per ms",
         from_start.elapsed().as_millis(),
-        (file_output_length as u128) / from_start.elapsed().as_millis()
+        (record_count as u128) / from_start.elapsed().as_millis()
     );
 
-    // Clean out empty webpages
-    oks.into_iter()
-        .map(Option::unwrap)
-        .filter(|x| x.mhtml.len() > 0)
-        .collect::<Vec<HTMLMinified>>()
+    oks
 }
 
 // Entry point
